@@ -2,7 +2,7 @@
 
 **Desenvolvedor(a) Delphi Pleno ou Sênior**
 
-Uma distribuidora recebe vendas por um portal B2B. O portal usa seus próprios códigos para identificar clientes e produtos. O ERP mantém os cadastros internos e controla o estoque. Desenvolva uma aplicação **Delphi com interface gráfica e banco Firebird** que permita ao usuário importar uma venda, entender uma rejeição, ajustar o estoque e tentar novamente.
+Uma distribuidora recebe vendas por um portal B2B. O portal usa seus próprios códigos para identificar clientes e produtos. O ERP mantém os cadastros internos e controla o estoque. Desenvolva uma aplicação **Delphi com interface gráfica e banco Firebird** que permita ao usuário importar uma venda, consultar o motivo de uma rejeição, cadastrar um cliente, ajustar o estoque e tentar novamente pelo histórico.
 
 Imagine um pedido de quatro unidades de um produto com apenas três disponíveis. O usuário vê a pendência, registra a entrada de duas unidades e reprocessa a venda pelo histórico. O resultado deve ser um pedido confirmado, com cinco unidades físicas, quatro reservadas e uma disponível.
 
@@ -10,7 +10,7 @@ Imagine um pedido de quatro unidades de um produto com apenas três disponíveis
 
 1. Crie um repositório público na sua conta do GitHub e copie para ele os arquivos deste projeto-base. Desenvolva e entregue sua solução nesse repositório.
 2. Em um banco Firebird dedicado ao desafio, na versão de sua escolha, execute o [script de estrutura fornecido](sql/01_estrutura.sql) usando o dialeto SQL 3.
-3. No mesmo banco, execute uma vez a [carga inicial fornecida pela SIG 2000](sql/02_carga_inicial.sql). Ela prepara os cadastros e saldos para importar o pedido externo 1.
+3. No mesmo banco, execute uma vez a [carga inicial fornecida pela SIG 2000](sql/02_carga_inicial.sql). Ela inclui os 20 clientes e os 61 produtos presentes nos pedidos externos 1 a 20. O pedido 2 permite testar uma importação direta com saldo suficiente. O pedido 1 exercita a reposição do produto 501, também solicitado nos pedidos 8 e 12.
 4. Inclua o projeto Delphi e o código-fonte no seu repositório. Documente como compilar a aplicação, configurar a conexão com o Firebird e reproduzir os testes. Informe as versões do Delphi e do Firebird utilizadas e as dependências do projeto.
 5. Envie à SIG 2000 o link do seu repositório. Explique brevemente como a solução protege o saldo sob concorrência, impede duplicação de pedidos e preserva o histórico após um rollback.
 
@@ -60,11 +60,21 @@ O usuário informa um número inteiro positivo e aciona **Importar pedido**. A a
 4. Se houver saldo para a venda inteira, grave o cabeçalho, os itens e as reservas **na mesma transação**. A confirmação aumenta a quantidade reservada. A quantidade física só muda quando o usuário registra uma entrada ou saída.
 5. Apresente o resultado ao usuário. Para um pedido confirmado, permita consultar o número externo, o cliente, os produtos, as quantidades, os preços unitários, os valores líquidos dos itens e o total do pedido.
 
+**Cliente ausente no Firebird.** Se o `userId` do pedido não existir em `CLIENTE.COD_PORTAL`, encerre a tentativa como `REJEITADO_CADASTRO`. Informe o número do pedido e o código externo do cliente. Preserve pedidos, itens e reservas. Nessa tentativa, ofereça a ação **Cadastrar cliente**.
+
 **Produto ausente no Firebird.** Antes de validar o estoque, procure cada `products[].id` do pedido em `PRODUTO.COD_PORTAL`. Se algum código estiver ausente, rejeite **o pedido inteiro** com o status `REJEITADO_CADASTRO`. O cadastro de produtos é mantido no ERP. A importação deve deixar esse cadastro intacto, sem criar o produto automaticamente. Preserve os saldos e registre apenas a tentativa, sem gravar cabeçalho, itens ou reservas.
 
 Mostre no histórico o número do pedido e o código externo de cada produto ausente. Exemplo de mensagem para o usuário do ERP: “Pedido 3 rejeitado. Produto do portal 9999 sem cadastro. Após vincular esse código a um produto no ERP e preparar seu estoque, use **Tentar novamente**.” Ao reprocessar, consulte novamente os cadastros e valide o saldo de todos os itens. Para demonstrar a correção cadastral, o avaliador pode usar SQL.
 
 Em caso de falha na gravação, reverta toda a transação da venda e registre o resultado no histórico da tentativa.
+
+### Consultar e cadastrar clientes
+
+Na área **Clientes**, o usuário deve conseguir consultar os clientes cadastrados e iniciar um cadastro. Exiba o nome, o código interno do ERP e o código do portal para que ele possa conferir o vínculo.
+
+1. Ao abrir **Cadastrar cliente** pelo histórico de uma rejeição, preencha o código do portal com o `userId` recebido. Ao iniciar o cadastro pela área **Clientes**, permita que o usuário informe esse código.
+2. Solicite o nome do cliente (obrigatório, até 100 caracteres) e um código de portal inteiro positivo. Ao salvar, atribua um ID interno, grave o registro em `CLIENTE` e apresente-o na consulta. Se o código do portal já estiver em uso, informe a duplicidade e preserve o cadastro existente.
+3. Depois de salvar, o usuário deve poder selecionar a rejeição original no histórico e acionar **Tentar novamente**. Localize o cliente recém-cadastrado pelo código do portal e prossiga com as validações da venda. Se o pedido for confirmado, grave o ID interno em `PEDIDO.CLIENTE_ID` e vincule a nova tentativa à rejeição original.
 
 ### Consultar e ajustar estoque
 
@@ -140,7 +150,10 @@ Prepare cada cenário de forma independente. Respostas HTTP simuladas podem ser 
 | CA09 | Uma consulta retorna 404 e outra retorna 503. | NAO_ENCONTRADO e FALHA_API, respectivamente, com identificação do pedido. |
 | CA10a | Consultar um pedido novo de cliente cadastrado com dois itens, um produto conhecido com saldo suficiente e o produto externo 9999 ausente. | O histórico registra REJEITADO_CADASTRO, o número do pedido e o código 9999. O produto continua ausente. Nenhum cabeçalho, item ou reserva é gravado, inclusive para o produto conhecido. |
 | CA10b | Cadastrar o produto com COD_PORTAL = 9999, incluir sua linha de estoque com saldo suficiente e acionar Tentar novamente na tentativa do CA10a. | Uma nova tentativa vinculada termina como IMPORTADO. O pedido contém os dois itens, com as respectivas reservas. A rejeição original permanece no histórico. |
-| CA10c | Consultar um pedido cujo cliente não tem correspondência local. | REJEITADO_CADASTRO identifica o código externo do cliente. Pedidos, itens e saldos são preservados. |
+| CA10c | Em uma base com a carga inicial, simular um pedido novo com `userId = 9999` e uma unidade do produto externo 113. | A tentativa termina como REJEITADO_CADASTRO, informa o pedido e o cliente externo 9999 e oferece **Cadastrar cliente**. Pedidos, itens e saldos são preservados. |
+| CA10d | Na rejeição do CA10c, abrir **Cadastrar cliente**, conferir o código 9999 já preenchido, informar o nome “Distribuidora de Teste” e salvar. | O cliente aparece na consulta com um ID interno, código do portal 9999 e o nome informado. A tentativa original continua rejeitada. |
+| CA10e | Pela área **Clientes**, tentar cadastrar outro nome com o código do portal 9999. | A interface informa que o código já está em uso. Existe um único cliente com esse código e seu nome continua “Distribuidora de Teste”. |
+| CA10f | Selecionar a rejeição do CA10c e acionar **Tentar novamente**, usando a mesma resposta simulada. | A nova tentativa termina como IMPORTADO e referencia a original. O pedido aponta para o ID interno do cliente criado no CA10d. Uma unidade do produto interno 502 fica reservada. |
 | CA11 | Falha de banco ao inserir o segundo item de um pedido novo. | Rollback do cabeçalho, dos itens e das reservas. A tentativa permanece consultável como FALHA_GRAVACAO. |
 | CA12 | Duas instâncias importam vendas diferentes, cada uma solicitando quatro unidades do mesmo produto, com cinco disponíveis. | Uma venda é confirmada e a outra termina como ESTOQUE_INSUFICIENTE. Quatro unidades reservadas e uma disponível. |
 | CA13 | Duas instâncias importam o mesmo número ao mesmo tempo, com saldo suficiente para duas cópias da venda. | Uma tentativa IMPORTADO e outra JA_IMPORTADO. Uma única venda e uma única reserva das quantidades solicitadas. |
